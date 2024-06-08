@@ -369,8 +369,6 @@ def main():
         # Wide if interview_started
         layout="wide" if not interview_not_started() else "centered"
     )
-    with st.sidebar:
-        st.write(st.session_state)
     setup_ui()
 
 def setup_ui():
@@ -510,7 +508,6 @@ def render_sidebar_controls():
         st.session_state.openai_api_key = st.text_input("Your OpenAI API Key", type="password", disabled=not interview_not_started())    
         configure_interview_details()
         manage_interview_controls()
-        st.write(st.session_state)
 
 def configure_interview_details():
     """Allow the user to set interview details in the sidebar."""
