@@ -37,13 +37,12 @@ class AnswerEvaluationChain(LLMChain):
     """Chain to evaluate the answer to a particular question."""
 
     @classmethod
-    def from_llm(cls, llm: BaseLLM, verbose: bool = True) -> LLMChain:
+    def from_llm(cls, llm: BaseLLM, position_description: str, applicant_resume: str, verbose: bool = True) -> LLMChain:
         """Get the response parser."""
         evaluation_template = (
-            # "You are an AI who evaluates the answer to a job interview question based on the following position description: {position_description}"
             "You are a hiring manager and your task is to evaluate the answer to a job interview question based on the following position description: {position_description}"
             " and applicant resume: {applicant_resume}."
-            "Take into account these previous answers: {context}."
+            "Take into account these previous answers: {previous_answers}."
             "The latest question: {question}."
             "The latest answer: {answer}."
             "Based on the answer, provide a short evaluation of how well the applicant answered the question"
@@ -52,50 +51,48 @@ class AnswerEvaluationChain(LLMChain):
         )
         prompt = PromptTemplate(
             template=evaluation_template,
-            input_variables=["position_description", "applicant_resume", "context", "question", "answer"],
+            partial_variables={"position_description": position_description, "applicant_resume": applicant_resume},
+            input_variables=["previous_answers", "question", "answer"],
         )
         return cls(prompt=prompt, llm=llm, verbose=verbose)
     
-    def evaluate_answer(self, position_description: str, applicant_resume: str, context: List[str], question: str, answer: str) -> str:
+    def evaluate_answer(self, previous_answers: List[str], question: str, answer: str) -> str:
         """Evaluate the answer."""
-        return self.run(position_description=position_description, applicant_resume=applicant_resume, context=context, question=question, answer=answer)
+        return self.run(previous_answers=previous_answers, question=question, answer=answer)
     
 class QuestionCreationChain(LLMChain):
     @classmethod
     def from_llm(cls, llm: BaseLLM, position_description: str, applicant_resume: str, verbose: bool = True) -> LLMChain:
         """Get the response parser."""
         question_creation_template = (
-            ### TODO - add the previously asked questions to the prompt and ask not to repeat them
-            "You are a job interview question creation AI that uses the results of a job interview Q&A execution agent to create new questions for the following job description: {position_description}"
-            " and job applicant resume: {resume}."
-            " The last question asked of the applicant was: \"{question_description}\","
+            "You are a hiring manager and your task is to use the results of a single job interview question and answer pair to create new questions for the following job description: {position_description}"
+            " and job applicant resume: {applicant_resume}."
+            " The last question asked of the applicant was: \"{question}\","
             " with applicant giving the answer: \"{answer}\"."
             " The evauation of the applicant's answer was: {evaluation}."
             " This is the list of unanswered questions: {incomplete_questions}."
             " This is the list of previously asked questions: {previous_questions}."
             " Based on the answer, either insert new questions into the unanswered questions list or modify existing questions in the unanswered questions list,"
-            " for the execution agent to execute."
+            " for the interviewer to ask in the remainder of the interview."
             " Don't ask questions that have already been asked."
             " If the answer has also completely answered an unanswered question, remove that question from the unanswered questions list."
             " If the answer has partially answered an unanswered question, modify that question in the unanswered questions list."
-            " The new questions should not overlap with existing unanswered questions."
-            " Return the consolidated single list of questions as an index numbered list."
-            " Only output the list items, don't output a label."
+            " Any new questions should not overlap with existing unanswered questions."
+            " Return the consolidated single list of questions as a JSON-compliant list i.e. [{{\"question_id\": 1, \"question_title\": \"quesiton 1\"}}, {{\"question_id\": 2, \"question_title\": \"quesiton 2\"}}, {{\"question_id\": 3, \"question_title\": \"quesiton 3\"}} etc]"
             " Consolidated list of questions:"
         )
         prompt = PromptTemplate(
             template=question_creation_template,
-            partial_variables={"position_description": position_description, "resume": applicant_resume},
-            input_variables=["evaluation", "answer", "question_description", "incomplete_questions"],
+            partial_variables={"position_description": position_description, "applicant_resume": applicant_resume},
+            input_variables=["evaluation", "answer", "question", "incomplete_questions"],
         )
         return cls(prompt=prompt, llm=llm, verbose=verbose)
     
-    def get_next_question(self, evaluation: str, answer: str, question_description: str, question_list: List[str], previous_questions: List[str]) -> List[Dict]:
+    def get_new_questions(self, evaluation: str, answer: str, question: str, question_list: List[str], previous_questions: List[str]) -> List[Dict]:
         """Get the next question."""
-        incomplete_questions = question_list #", ".join(question_list)
-        response = self.run(evaluation=evaluation, answer=answer, question_description=question_description, incomplete_questions=incomplete_questions, previous_questions=previous_questions)
-        new_questions = response.split('\n')
-        return [{"question_title": question_title} for question_title in new_questions if question_title.strip(" '\"")]
+        incomplete_questions = question_list
+        response = self.run(evaluation=evaluation, answer=answer, question=question, incomplete_questions=incomplete_questions, previous_questions=previous_questions)
+        return json.loads(response.replace("```json\n[", "[").replace("]\n```", "]"))
     
 class QuestionPrioritizationChain(LLMChain):
     """Chain to prioritize questions."""
@@ -105,68 +102,53 @@ class QuestionPrioritizationChain(LLMChain):
         """Get the response parser."""
         question_prioritization_template = (
             "You are an job interview question prioritization AI tasked with cleaning the formatting of and reprioritizing the following job interview questions: {question_titles}."
-            "Consider the job description: {position_description}"
-            " and job applicant resume: {resume}."
-            "Do not remove any existing questions. Do not modify any existing questions. Return the reprioritized questions as an index numbered list."
-            "Only output the list items, don't output a label."
-            "Reprioritised list of questions:"
+            " Consider the job description: {position_description}"
+            " and job applicant resume: {applicant_resume}."
+            " Do not remove any existing questions. Do not modify any existing questions."
+            " Return the reprioritized questions as a JSON-compliant list i.e. [{{\"question_id\": 1, \"question_title\": \"quesiton 1\"}}, {{\"question_id\": 2, \"question_title\": \"quesiton 2\"}}, {{\"question_id\": 3, \"question_title\": \"quesiton 3\"}} etc]."
+            " Reprioritised list of questions:"
         )
         prompt = PromptTemplate(
             template=question_prioritization_template,
-            partial_variables={"position_description": position_description, "resume": applicant_resume},
+            partial_variables={"position_description": position_description, "applicant_resume": applicant_resume},
             input_variables=["question_titles"],
         )
         return cls(prompt=prompt, llm=llm, verbose=verbose)
 
     def prioritize_questions(self, this_question_id: int, question_list: List[Dict]) -> List[Dict]:
         """Prioritize questions."""
-        question_titles = [t["question_title"] for t in question_list]
-        response = self.run(question_titles=question_titles)
-        new_questions = response.split('\n')
-        prioritized_question_list = []
-        for question_string in new_questions:
-            if not question_string.strip():
-                continue
-            question_parts = question_string.strip().split(".", 1)
-            if len(question_parts) == 2:
-                question_id = int(question_parts[0].strip()) + this_question_id
-                question_title = question_parts[1].strip(" '\"")
-                prioritized_question_list.append({"question_id": question_id, "question_title": question_title})
+        response = self.run(question_titles=[question["question_title"] for question in question_list])
+        prioritized_question_list = json.loads(response.replace("```json\n[", "[").replace("]\n```", "]"))
+        for question in prioritized_question_list:
+            question["question_id"] += this_question_id
         return prioritized_question_list
     
 class InterviewAssessmentChain(LLMChain):
     """Chain to assess all the interview answers and decide whether to proceed with the applicant."""
 
     @classmethod
-    def from_llm(cls, llm: BaseLLM, verbose: bool = True) -> LLMChain:
+    def from_llm(cls, llm: BaseLLM, position_description: str, applicant_resume: str, verbose: bool = True) -> LLMChain:
         """Get the response parser."""
         evaluation_template = (
-            # "You are an AI who assesses all the answers from the job interview questions based on the following position description: {position_description}"
             "You are a hiring manager and your task is to assesses all the answers from the job interview questions based on the following position description: {position_description}"
             " and applicant resume: {applicant_resume}."
-            # " Your are to respond very obvioulsly in the persona of {persona}."
-            " Take into account these previously answered questions: {context}."
+            " Take into account these previously answered questions: {questions}."
             " The answers: {answers}."
             " Based on the answers, decide whether to proceed with the applicant and provide a justification."
             " Response:"
         )
         prompt = PromptTemplate(
             template=evaluation_template,
-            input_variables=["position_description", "applicant_resume", "context", "answers"],
+            partial_variables={"position_description": position_description, "applicant_resume": applicant_resume},
+            input_variables=["questions", "answers"],
         )
         return cls(prompt=prompt, llm=llm, verbose=verbose)
     
-    def assess_interview(self, position_description: str, applicant_resume: str, context: List[str], answers: List[str]) -> str:
+    def assess_interview(self, questions: List[str], answers: List[str]) -> str:
         """Evaluate the interview."""
-        return self.run(position_description=position_description, applicant_resume=applicant_resume, context=context, answers=answers)
+        return self.run(questions=questions, answers=answers)
 
 def ready_for_interview():
-    # Check if the user has entered the required fields
-    # - OpenAI API key
-    # - Position Description
-    # - Applicant Resume
-    # - First Question
-    # Validate Max questions is a positive integer greater than 0
     if not st.session_state.openai_api_key:
         st.error("Please enter your OpenAI API key to start the interview.")
         return False
@@ -184,47 +166,65 @@ def ready_for_interview():
         return False
     return True
 
-def start_interview():
-    if not ready_for_interview():
-        return
-
+def init_interview_state():
+    # Initialise interview_state to start the interview
     st.session_state.interview_state["interview_state"] = InterviewState.STARTED
     st.session_state.interview_state["number_of_questions_evaluated"] = 0
     st.session_state.interview_state["chat_input_message"] = "Answer the questions to continue the interview"
     st.session_state.interview_state["current_question"] = {"question_id": 0, "question_title": st.session_state.first_question}
     st.session_state.interview_state["conversation"] = [{"role": MessageParticipant.ASSISTANT, 
-                                                             "content": st.session_state.first_question,
-                                                             "type": MessageType.QUESTION,
-                                                             "question_id": 0,
-                                                             }]
+                                                        "content": st.session_state.first_question,
+                                                        "type": MessageType.QUESTION,
+                                                        "question_id": 0,
+                                                        }]
     st.session_state.interview_state["number_of_questions_asked"] += 1
+
+def init_agents():
+    # Intialise the agents
     st.session_state.agents["question_id_counter"] = 0
     st.session_state.agents["question_list"] = deque()
-
     chat = ChatOpenAI(openai_api_key=st.session_state.openai_api_key)
     st.session_state.agents["evaluation"] = AnswerEvaluationChain.from_llm(llm=chat, 
-                                                                          verbose=LLM_VERBOSE)
+                                                                        position_description=st.session_state.position_description, 
+                                                                        applicant_resume=st.session_state.applicant_resume, 
+                                                                        verbose=LLM_VERBOSE)
     st.session_state.agents["creation"] = QuestionCreationChain.from_llm(llm=chat, 
-                                                                         position_description=st.session_state.position_description, 
-                                                                         applicant_resume=st.session_state.applicant_resume, 
-                                                                         verbose=LLM_VERBOSE)
+                                                                        position_description=st.session_state.position_description, 
+                                                                        applicant_resume=st.session_state.applicant_resume, 
+                                                                        verbose=LLM_VERBOSE)
     st.session_state.agents["prioritisation"] = QuestionPrioritizationChain.from_llm(llm=chat, 
-                                                                                     position_description=st.session_state.position_description, 
-                                                                                     applicant_resume=st.session_state.applicant_resume, 
-                                                                                     verbose=LLM_VERBOSE)
+                                                                                    position_description=st.session_state.position_description, 
+                                                                                    applicant_resume=st.session_state.applicant_resume, 
+                                                                                    verbose=LLM_VERBOSE)
     st.session_state.agents["assessment"] = InterviewAssessmentChain.from_llm(llm=chat, 
-                                                                              verbose=LLM_VERBOSE)
+                                                                            position_description=st.session_state.position_description, 
+                                                                            applicant_resume=st.session_state.applicant_resume, 
+                                                                            verbose=LLM_VERBOSE)
 
-def end_interview():
-    assessment = st.session_state.agents["assessment"].assess_interview(st.session_state.position_description,
-                                                                        st.session_state.applicant_resume, 
-                                                                        get_all_questions(), 
+def start_interview():
+    if not ready_for_interview():
+        return
+    else:
+        init_interview_state()
+        init_agents()
+
+def get_all_questions():
+    return [message["content"] for message in st.session_state.interview_state["conversation"] if message["type"].value == MessageType.QUESTION.value]
+
+def get_all_answers():
+    return [message["content"] for message in st.session_state.interview_state["conversation"] if message["type"].value == MessageType.ANSWER.value]
+
+def assess_interview():
+    # Assess the interview
+    assessment = st.session_state.agents["assessment"].assess_interview(get_all_questions(), 
                                                                         get_all_answers())
     st.session_state.interview_state["conversation"].append({"role": MessageParticipant.ASSISTANT, 
                                                              "content": assessment,
                                                              "type": MessageType.OTHER,
                                                              })
-
+    
+def conclude_interview_chat():
+    # Conclusion message
     st.session_state.interview_state["interview_state"] = InterviewState.COMPLETED
     st.session_state.interview_state["chat_input_message"] = "Press the button to reset the interview"
     st.session_state.interview_state["conversation"].append({"role": MessageParticipant.ASSISTANT, 
@@ -232,11 +232,9 @@ def end_interview():
                                                              "type": MessageType.OTHER,
                                                              })
 
-def get_all_questions():
-    return [message["content"] for message in st.session_state.interview_state["conversation"] if message["type"] == MessageType.QUESTION]
-
-def get_all_answers():
-    return [message["content"] for message in st.session_state.interview_state["conversation"] if message["type"] == MessageType.ANSWER]
+def end_interview():
+    assess_interview()
+    conclude_interview_chat()
 
 def init_state():
     if 'openai_api_key' not in st.session_state:
@@ -272,42 +270,26 @@ def reset_interview():
     st.session_state.agents = {
         "question_id_counter": 0,
         "question_list": [],
+        "evaluation": None,
         "creation": None,
         "prioritisation": None,
-        "evaluation": None,
         "assessment": None
     }
 
-def interview_not_started():
-    return st.session_state.interview_state["interview_state"].value == InterviewState.NOT_STARTED.value
-
-def interview_started():
-    return st.session_state.interview_state["interview_state"].value == InterviewState.STARTED.value
-
-def interview_completed():
-    return st.session_state.interview_state["interview_state"].value == InterviewState.COMPLETED.value
-
 def submit_answer_handler():
     answer = st.session_state.chat_dialog;
+    question = st.session_state.interview_state["current_question"]
 
     # Add user input to the conversation and process it
     st.session_state.interview_state["conversation"].append({"role": MessageParticipant.USER, 
                                                              "content": answer,
                                                              "type": MessageType.ANSWER,
-                                                             "question_id": st.session_state.interview_state["current_question"]["question_id"],
+                                                             "question_id": question["question_id"],
                                                              })
-
     # Evaluate the answer
-    all_answers = [message["content"] for message in st.session_state.interview_state["conversation"] if message["type"] == MessageType.ANSWER]
-    all_questions = [message["content"] for message in st.session_state.interview_state["conversation"] if message["type"].value == MessageType.QUESTION.value]
-    previous_questions = all_questions[:-1]
-    question = st.session_state.interview_state["current_question"]
-    answer_evaluation = st.session_state.agents["evaluation"].evaluate_answer(st.session_state.position_description, 
-                                                                             st.session_state.applicant_resume, 
-                                                                             all_answers[:-1], # all previous answers
-                                                                             question["question_title"], # the current question
-                                                                             answer)
-
+    answer_evaluation = st.session_state.agents["evaluation"].evaluate_answer(get_all_answers()[:-1], # all previous answers
+                                                                              question["question_title"], # the current question
+                                                                              answer)
     if answer_evaluation:
         # Add the response to the conversation
         st.session_state.interview_state["conversation"].append({"role": MessageParticipant.ASSISTANT, 
@@ -323,16 +305,16 @@ def submit_answer_handler():
                                                                          "answer":     answer, 
                                                                          "evaluation": answer_evaluation
                                                                          })
-
+    # Check if the interview is complete
     if st.session_state.interview_state["number_of_questions_evaluated"] >= st.session_state.max_questions:
         end_interview()
     else:
         # Get the new questions based on last answer
-        new_questions = st.session_state.agents["creation"].get_next_question(answer_evaluation, 
+        new_questions = st.session_state.agents["creation"].get_new_questions(answer_evaluation, 
                                                                               answer, 
                                                                               question["question_title"], 
                                                                               list(st.session_state.agents["question_list"]),
-                                                                              previous_questions)
+                                                                              get_all_questions())
         # Update agent log
         st.session_state.interview_state["creation_agent_log"].append({"question_id": question["question_id"],
                                                                        "previous_questions": list(st.session_state.agents["question_list"]),
@@ -340,13 +322,15 @@ def submit_answer_handler():
                                                                        "new_questions": new_questions,
                                                                        "new_questions_count": len(new_questions)
                                                                        })
-
-        # Add new questions to the list
-        for new_question in new_questions:
-            # Update the question id index to continue from the last question id of the list
-            st.session_state.agents["question_id_counter"] += 1
-            new_question.update({"question_id": st.session_state.agents["question_id_counter"]})
-            st.session_state.agents["question_list"].append(new_question)
+        # Add new questions to the question list
+        # Increment the question ID counter for each new question and update the question list
+        last_question_id = st.session_state.agents["question_id_counter"]
+        for new_quesion in new_questions:
+            new_quesion["question_id"] += last_question_id
+        # Update the question ID counter to the new last ID
+        st.session_state.agents["question_id_counter"] += len(new_questions)
+        # Extend the existing question list with the newly updated questions
+        st.session_state.agents["question_list"].extend(new_questions)
         # Reprioritise the list
         st.session_state.agents["question_list"] = deque(st.session_state.agents["prioritisation"].prioritize_questions(int(question["question_id"]), 
                                                                                                                         list(st.session_state.agents["question_list"])))
@@ -364,6 +348,14 @@ def submit_answer_handler():
         st.session_state.interview_state["current_question"] = next_question
         st.session_state.interview_state["number_of_questions_asked"] += 1
 
+def interview_not_started():
+    return st.session_state.interview_state["interview_state"].value == InterviewState.NOT_STARTED.value
+
+def interview_started():
+    return st.session_state.interview_state["interview_state"].value == InterviewState.STARTED.value
+
+def interview_completed():
+    return st.session_state.interview_state["interview_state"].value == InterviewState.COMPLETED.value
 
 def main():
     """Main function to set up and manage the Streamlit interface."""
@@ -534,7 +526,6 @@ def manage_interview_controls():
         st.button("Start Interview", on_click=start_interview, disabled=not interview_not_started())
     with col2:
         st.button("Reset Interview", on_click=reset_interview, disabled=interview_not_started())
-
 
 if __name__ == "__main__":
     main()
