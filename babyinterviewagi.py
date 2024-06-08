@@ -160,39 +160,64 @@ class InterviewAssessmentChain(LLMChain):
         """Evaluate the interview."""
         return self.run(position_description=position_description, applicant_resume=applicant_resume, context=context, answers=answers)
 
+def ready_for_interview():
+    # Check if the user has entered the required fields
+    # - OpenAI API key
+    # - Position Description
+    # - Applicant Resume
+    # - First Question
+    # Validate Max questions is a positive integer greater than 0
+    if not st.session_state.openai_api_key:
+        st.error("Please enter your OpenAI API key to start the interview.")
+        return False
+    if not st.session_state.position_description:
+        st.error("Please enter the Position Description to start the interview.")
+        return False
+    if not st.session_state.applicant_resume:
+        st.error("Please enter the Applicant Resume to start the interview.")
+        return False
+    if not st.session_state.max_questions or st.session_state.max_questions <= 0:
+        st.error("Please enter a positive integer greater than 0 for the Max Questions to ask.")
+        return False
+    if not st.session_state.first_question:
+        st.error("Please enter the First Question to ask the applicant.")
+        return False
+    return True
+
 def start_interview():
+    if not ready_for_interview():
+        return
+
     st.session_state.interview_state["interview_state"] = InterviewState.STARTED
     st.session_state.interview_state["number_of_questions_evaluated"] = 0
     st.session_state.interview_state["chat_input_message"] = "Answer the questions to continue the interview"
-    st.session_state.interview_state["current_question"] = {"question_id": 0, "question_title": st.session_state.interview_state["first_question"]}
-    st.session_state.interview_state["conversation"] = []
-    st.session_state.interview_state["conversation"].append({"role": MessageParticipant.ASSISTANT, 
-                                                             "content": st.session_state.interview_state["first_question"],
+    st.session_state.interview_state["current_question"] = {"question_id": 0, "question_title": st.session_state.first_question}
+    st.session_state.interview_state["conversation"] = [{"role": MessageParticipant.ASSISTANT, 
+                                                             "content": st.session_state.first_question,
                                                              "type": MessageType.QUESTION,
                                                              "question_id": 0,
-                                                             }) 
+                                                             }]
     st.session_state.interview_state["number_of_questions_asked"] += 1
-
-    chat = ChatOpenAI(openai_api_key=st.session_state.openai_api_key)
-
     st.session_state.agents["question_id_counter"] = 0
     st.session_state.agents["question_list"] = deque()
+
+    chat = ChatOpenAI(openai_api_key=st.session_state.openai_api_key)
     st.session_state.agents["evaluation"] = AnswerEvaluationChain.from_llm(llm=chat, 
                                                                           verbose=LLM_VERBOSE)
     st.session_state.agents["creation"] = QuestionCreationChain.from_llm(llm=chat, 
-                                                                         position_description=st.session_state.interview_state["position_description"], 
-                                                                         applicant_resume=st.session_state.interview_state["applicant_resume"], 
+                                                                         position_description=st.session_state.position_description, 
+                                                                         applicant_resume=st.session_state.applicant_resume, 
                                                                          verbose=LLM_VERBOSE)
     st.session_state.agents["prioritisation"] = QuestionPrioritizationChain.from_llm(llm=chat, 
-                                                                                     position_description=st.session_state.interview_state["position_description"], 
-                                                                                     applicant_resume=st.session_state.interview_state["applicant_resume"], 
+                                                                                     position_description=st.session_state.position_description, 
+                                                                                     applicant_resume=st.session_state.applicant_resume, 
                                                                                      verbose=LLM_VERBOSE)
     st.session_state.agents["assessment"] = InterviewAssessmentChain.from_llm(llm=chat, 
                                                                               verbose=LLM_VERBOSE)
 
 def end_interview():
-    assessment = st.session_state.agents["assessment"].assess_interview(st.session_state.interview_state["position_description"],
-                                                                        st.session_state.interview_state["applicant_resume"], 
+    assessment = st.session_state.agents["assessment"].assess_interview(st.session_state.position_description,
+                                                                        st.session_state.applicant_resume, 
                                                                         get_all_questions(), 
                                                                         get_all_answers())
     st.session_state.interview_state["conversation"].append({"role": MessageParticipant.ASSISTANT, 
@@ -213,17 +238,29 @@ def get_all_questions():
 def get_all_answers():
     return [message["content"] for message in st.session_state.interview_state["conversation"] if message["type"] == MessageType.ANSWER]
 
-def reset_interview():
-    if 'first_question' not in st.session_state:
-        st.session_state.first_question = ""
+def init_state():
+    if 'openai_api_key' not in st.session_state:
+        st.session_state.openai_api = None
 
+    if 'position_description' not in st.session_state:
+        st.session_state.position_description = None
+
+    if 'applicant_resume' not in st.session_state:
+        st.session_state.applicant_resume = None
+
+    if 'max_questions' not in st.session_state:
+        st.session_state.max_questions = 3
+
+    if 'first_question' not in st.session_state:
+        st.session_state.first_question = DEFAULT_FIRST_QUESTION
+
+    if ('interview_state' not in st.session_state) or ('agents' not in st.session_state):
+        reset_interview()
+
+def reset_interview():
     st.session_state.interview_state = {
-        "position_description": None, # "This is a simulated position description.",
-        "applicant_resume": None, # "This is a simulated applicant resume.",
-        "first_question": st.session_state.first_question, # "Why are you looking for a new job?",
-        "max_questions": 3, # Maximum number of questions to ask
         "interview_state": InterviewState.NOT_STARTED, # InterviewState
-        "current_question": { "question_id": 0, "question_title": None}, # {"question_id": int, "question_title": "content"}
+        "current_question": { "question_id": 0, "question_title": st.session_state.first_question}, # {"question_id": int, "question_title": "content"}
         "number_of_questions_asked": 0, # int
         "number_of_questions_evaluated": 0, # int
         "chat_input_message": "Press the button to start a new interview", # "content"
@@ -265,8 +302,8 @@ def submit_answer_handler():
     all_questions = [message["content"] for message in st.session_state.interview_state["conversation"] if message["type"].value == MessageType.QUESTION.value]
     previous_questions = all_questions[:-1]
     question = st.session_state.interview_state["current_question"]
-    answer_evaluation = st.session_state.agents["evaluation"].evaluate_answer(st.session_state.interview_state["position_description"], 
-                                                                             st.session_state.interview_state["applicant_resume"], 
+    answer_evaluation = st.session_state.agents["evaluation"].evaluate_answer(st.session_state.position_description, 
+                                                                             st.session_state.applicant_resume, 
                                                                              all_answers[:-1], # all previous answers
                                                                              question["question_title"], # the current question
                                                                              answer)
@@ -287,7 +324,7 @@ def submit_answer_handler():
                                                                          "evaluation": answer_evaluation
                                                                          })
 
-    if st.session_state.interview_state["number_of_questions_evaluated"] >= st.session_state.interview_state["max_questions"]:
+    if st.session_state.interview_state["number_of_questions_evaluated"] >= st.session_state.max_questions:
         end_interview()
     else:
         # Get the new questions based on last answer
@@ -331,7 +368,7 @@ def submit_answer_handler():
 def main():
     """Main function to set up and manage the Streamlit interface."""
     if 'interview_state' not in st.session_state:
-        reset_interview()
+        init_state()
     
     st.set_page_config(
         # Expand sidebar if not interview_started
@@ -340,6 +377,8 @@ def main():
         # Wide if interview_started
         layout="wide" if not interview_not_started() else "centered"
     )
+    with st.sidebar:
+        st.write(st.session_state)
     setup_ui()
 
 def setup_ui():
@@ -455,7 +494,6 @@ def render_agent_logs():
 
     # Display the Prioritisation agent log in a dataframe
     if st.session_state.interview_state["proiritisation_agent_log"]:
-    # if "prioritisation_agent_log" in st.session_state.interview_state:
         st.subheader("Prioritisation Agent Log:")
 
         # Process the data for display
@@ -480,13 +518,14 @@ def render_sidebar_controls():
         st.session_state.openai_api_key = st.text_input("Your OpenAI API Key", type="password", disabled=not interview_not_started())    
         configure_interview_details()
         manage_interview_controls()
+        st.write(st.session_state)
 
 def configure_interview_details():
     """Allow the user to set interview details in the sidebar."""
-    st.session_state.position_description = st.text_area("Position Description", value=st.session_state.interview_state["position_description"], disabled=not interview_not_started())
-    st.session_state.applicant_resume = st.text_area("Applicant Resume", value=st.session_state.interview_state["applicant_resume"], disabled=not interview_not_started())
-    st.session_state.max_questions = st.number_input("Max Questions", value=st.session_state.interview_state["max_questions"], disabled=not interview_not_started())
-    st.session_state.first_question = st.text_area("First Question", value=DEFAULT_FIRST_QUESTION, disabled=not interview_not_started())    
+    st.session_state.position_description = st.text_area("Position Description", value=st.session_state.position_description, disabled=not interview_not_started())
+    st.session_state.applicant_resume = st.text_area("Applicant Resume", value=st.session_state.applicant_resume, disabled=not interview_not_started())
+    st.session_state.max_questions = st.number_input("Max Questions", value=st.session_state.max_questions, disabled=not interview_not_started())
+    st.session_state.first_question = st.text_area("First Question", value=st.session_state.first_question, disabled=not interview_not_started())    
 
 def manage_interview_controls():
     """Provide buttons to start or reset the interview."""
