@@ -402,14 +402,15 @@ def render_conversation():
     for message in st.session_state.interview_state["conversation"]:
         with st.chat_message(message["role"].name):
             # Display evluation in caption
+            question_number = message["question_id"]+1
             if message["type"].value == MessageType.EVALUATION.value:
-                st.markdown(f"EVALUATION {message["question_id"]+1}:")
+                st.markdown(f"EVALUATION {question_number}:")
                 st.markdown(message['content'])
             elif message["type"].value == MessageType.QUESTION.value:
-                st.markdown(f"QUESTION {message["question_id"]+1}:")
+                st.markdown(f"QUESTION {question_number}:")
                 st.markdown(message["content"])
             elif message["type"].value == MessageType.ANSWER.value:
-                st.markdown(f"ANSWER {message["question_id"]+1}:")
+                st.markdown(f"ANSWER {question_number}:")
                 st.markdown(message["content"])
             else:
                 st.markdown(message["content"])
